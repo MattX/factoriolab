@@ -615,6 +615,9 @@ async function processMod(): Promise<void> {
   for (const key of Object.keys(dataRaw.technology)) {
     const techRaw = dataRaw.technology[key];
     const techData = techRaw[mode] || (techRaw as M.TechnologyData);
+    if (key === 'cube-sulfur-processing') {
+      console.log(techData);
+    }
 
     if (
       itemMap[techRaw.name] ||
@@ -870,6 +873,7 @@ async function processMod(): Promise<void> {
   }
 
   // Check for use in recipe ingredients / products
+  console.log('cube-sulfuric-acid' in recipesEnabled);
   for (const key of Object.keys(recipesEnabled)) {
     for (const ingredient of Object.keys(recipeIngredientsMap[key][0])) {
       itemsUsed.add(ingredient);

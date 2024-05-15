@@ -586,6 +586,7 @@ export class RecipeUtility {
     adjustedRecipe: Entities<AdjustedRecipe>,
     data: Dataset,
   ): AdjustedDataset {
+    console.log(data);
     const excludedSet = new Set(excludedRecipeIds);
     const itemRecipeIds: Entities<string[]> = {};
     const itemIncludedRecipeIds: Entities<string[]> = {};
