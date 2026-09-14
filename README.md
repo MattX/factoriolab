@@ -26,8 +26,7 @@ This project is intended to build on the features of the Kirk McDonald [Factorio
 
 ## Running online
 
-The calculator can be found at <https://factoriolab.github.io>.  
-The staging environment, for testing pull requests, can be found at <https://factoriolab.github.io/staging>.
+The calculator can be found at <https://factoriolab.github.io>.
 
 ## Running locally
 

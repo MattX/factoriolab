@@ -6,6 +6,8 @@ import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig(
+  // Compiled output of the agent engine; lint its sources instead.
+  { ignores: ['agent/.build/**'] },
   {
     files: ['**/*.ts'],
     extends: [
