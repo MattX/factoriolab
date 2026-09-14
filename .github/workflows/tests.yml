@@ -1,9 +1,9 @@
 name: tests
 on:
   push:
-    branches: [main]
+    branches: [main, mcp]
   pull_request:
-    branches: [main]
+    branches: [main, mcp]
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -35,6 +35,9 @@ jobs:
 
       - name: Run tests
         run: npm run test:ci
+
+      - name: Run build
+        run: npm run build
 
       - name: Publish Test Results
         uses: EnricoMi/publish-unit-test-result-action@v2
