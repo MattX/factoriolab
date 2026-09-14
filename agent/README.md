@@ -59,7 +59,7 @@ Rerun `npm run agent:build` after changing anything under `src/` or `agent/`.
 | `search_ids`     | Find item and recipe ids by name. Ids differ per mod set, so call this before guessing one. |
 | `solve_sheet`    | Build a sheet from objectives and settings, and solve it.                                   |
 | `describe_sheet` | Read an existing sheet URL, including links from older versions.                            |
-| `edit_sheet`     | Change objectives or settings on a sheet URL and re-solve.                                  |
+| `edit_sheet`     | Change objectives, settings, or overrides on a sheet URL and re-solve.                      |
 
 Every solve returns the required machines, item rates, power, pollution, and a
 `url` that reopens the sheet at factoriolab.github.io.
@@ -68,6 +68,46 @@ Objectives take a `type`: `output` produces a rate, `limit` caps one, `input`
 supplies one, and `maximize` produces as much as possible, which needs at least
 one `limit` to bound it. Rates are per the sheet's display rate, and exact
 fractions such as `"1/3"` are accepted and preserved.
+
+## Settings and overrides
+
+`settings` covers the whole sheet: the display rate, the machine, fuel and
+module preference order, excluded recipes, and so on. `recipeOverrides` and
+`itemOverrides` pin one recipe or one item against those preferences, which is
+what the web app's per-step controls do:
+
+| Override                                                       | Applies to |
+| -------------------------------------------------------------- | ---------- |
+| `machineId`, `fuelId`, `modules`, `beacons`, `overclock`       | one recipe |
+| `cost` (how hard the solver avoids the recipe), `productivity` | one recipe |
+| `beltId` (a pipe, for a fluid), `stack`, `wagonId`             | one item   |
+| `excludeRockets`                                               | one item   |
+
+```json
+{
+  "modId": "2x1",
+  "objectives": [{ "targetId": "electronic-circuit", "value": 600 }],
+  "recipeOverrides": {
+    "copper-cable": {
+      "machineId": "assembling-machine-3",
+      "modules": [{ "id": "speed-module-3", "count": 4 }],
+      "beacons": [{ "id": "beacon", "count": 8, "modules": [{ "id": "speed-module-3" }] }]
+    }
+  },
+  "itemOverrides": { "copper-cable": { "beltId": "express-transport-belt" } }
+}
+```
+
+Overrides are stored as the difference from the sheet's own defaults, the way
+the app stores them, so pinning a value that already is the default changes
+nothing, and a later change to `settings` still moves everything that was not
+pinned. Every solve reports the overrides in effect under `recipeOverrides` and
+`itemOverrides`, and an id or a module a machine cannot take is rejected along
+with the list of ids that would have worked.
+
+On `edit_sheet`, overrides are merged over the sheet's own. Passing `null` for a
+field drops that one override; `resetRecipeIds` and `resetItemIds` drop every
+override on the ids they name.
 
 ## Tests
 
@@ -109,7 +149,11 @@ Four things stand between the app and Node, and each is handled in
   in `public/data`.
 - Custom mod sets uploaded through the web app's editor are stored in browser
   storage and are not reachable from here.
-- Per-recipe and per-item overrides round-trip through URLs correctly but are
-  not yet exposed as tool arguments; `settings` covers the sheet-wide levers.
+- Overrides on an objective's own recipe row, which the web app allows for
+  `machines` objectives, are not exposed; `recipeOverrides` covers the recipe
+  wherever else it appears.
+- Machine-wide defaults, which the web app sets on its settings page, are not
+  exposed either, so a module loadout meant for every assembler has to be set
+  per recipe or approached through `moduleRankIds`.
 - Links with no mod set in the path resolve to Factorio 1.1, matching the app's
   own route guard.

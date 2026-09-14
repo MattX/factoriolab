@@ -38,6 +38,8 @@ interface SheetPayload {
   steps?: unknown[];
   omittedSteps?: number;
   objectives?: unknown[];
+  recipeOverrides?: { recipeId?: string; machineId?: string }[];
+  itemOverrides?: { itemId?: string; beltId?: string }[];
 }
 
 interface ToolOutcome<T> {
@@ -139,6 +141,52 @@ async function main(): Promise<void> {
   });
   equal('adds the objective', edited.data.objectives?.length, 2);
   equal('applies the setting', edited.data.displayRate, 'per-second');
+
+  console.log('overrides');
+  const pinned = await call<SheetPayload>('solve_sheet', {
+    modId: '1.1',
+    objectives: [{ targetId: 'electronic-circuit', value: 60 }],
+    recipeOverrides: {
+      'copper-cable': {
+        machineId: 'assembling-machine-3',
+        modules: [{ id: 'speed-module-3', count: 4 }],
+      },
+    },
+    itemOverrides: { 'copper-cable': { beltId: 'express-transport-belt' } },
+    maxSteps: 1,
+  });
+  check('solves with overrides', pinned.ok, pinned.text.slice(0, 200));
+  equal(
+    'reports the recipe override',
+    pinned.data.recipeOverrides?.[0]?.machineId,
+    'assembling-machine-3',
+  );
+  equal(
+    'reports the item override',
+    pinned.data.itemOverrides?.[0]?.beltId,
+    'express-transport-belt',
+  );
+
+  const unpinned = await call<SheetPayload>('edit_sheet', {
+    url: pinned.data.url ?? '',
+    resetRecipeIds: ['copper-cable'],
+    resetItemIds: ['copper-cable'],
+    maxSteps: 1,
+  });
+  equal('resets them again', unpinned.data.recipeOverrides, undefined);
+  equal('both of them', unpinned.data.itemOverrides, undefined);
+
+  const badMachine = await call<SheetPayload>('solve_sheet', {
+    modId: '1.1',
+    objectives: [{ targetId: 'iron-plate', value: 1 }],
+    recipeOverrides: { 'iron-plate': { machineId: 'assembling-machine-1' } },
+  });
+  check('rejects a machine that cannot run the recipe', !badMachine.ok);
+  check(
+    'and lists the ones that can',
+    badMachine.text.includes('electric-furnace'),
+    badMachine.text,
+  );
 
   console.log('describe_sheet');
   const described = await call<SheetPayload>('describe_sheet', {

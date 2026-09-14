@@ -3,9 +3,15 @@ import './shims';
 
 import { Rational } from '~/rational/rational';
 import { Step } from '~/solver/step';
+import { BeaconSettings } from '~/state/beacon-settings';
+import { ItemSettings } from '~/state/items/item-settings';
+import { ItemState } from '~/state/items/item-state';
+import { ModuleSettings } from '~/state/module-settings';
 import { ObjectiveState } from '~/state/objectives/objective';
 import { ObjectiveType } from '~/state/objectives/objective-type';
 import { ObjectiveUnit } from '~/state/objectives/objective-unit';
+import { RecipeSettings } from '~/state/recipes/recipe-settings';
+import { RecipeState } from '~/state/recipes/recipe-state';
 import { AdjustedDataset } from '~/state/settings/dataset';
 import { DisplayRate } from '~/state/settings/display-rate';
 
@@ -156,4 +162,122 @@ export function prune<T extends object>(value: T): T {
   for (const key of Object.keys(value) as (keyof T)[])
     if (value[key] === undefined) delete value[key];
   return value;
+}
+
+export interface ModuleRow {
+  /** `''` is an empty module slot. */
+  id?: string;
+  count?: Quantity;
+}
+
+export interface BeaconRow {
+  id?: string;
+  count?: Quantity;
+  /** Beacons shared with other machines, when counted that way. */
+  total?: Quantity;
+  modules?: ModuleRow[];
+}
+
+/** The per-recipe overrides set on one recipe. */
+export interface RecipeOverrideRow {
+  recipeId: string;
+  recipe?: string;
+  machineId?: string;
+  machine?: string;
+  fuelId?: string;
+  modules?: ModuleRow[];
+  beacons?: BeaconRow[];
+  /** Percent; 100 is the machine's rated speed. */
+  overclock?: Quantity;
+  cost?: Quantity;
+  /** Percent added to the recipe's output. */
+  productivity?: Quantity;
+}
+
+/** The per-item overrides set on one item. */
+export interface ItemOverrideRow {
+  itemId: string;
+  item?: string;
+  beltId?: string;
+  stack?: Quantity;
+  wagonId?: string;
+  excludeRockets?: boolean;
+}
+
+/**
+ * Reports a field only when the sheet actually overrides it. The stored state
+ * says which fields are overridden; the computed settings say what each one
+ * resolves to, which is the more useful of the two to report because the stored
+ * form leaves ids implicit wherever they match a default.
+ *
+ * Callers fall back to the stored value where the computed settings drop a
+ * field, as a machine that supports no fuel or no modules does: an override the
+ * solver is ignoring is worth reporting rather than hiding.
+ */
+function ifSet<T>(stored: unknown, resolved: T | undefined): T | undefined {
+  return stored == null ? undefined : resolved;
+}
+
+function moduleRow(value: ModuleSettings): ModuleRow {
+  return prune({ id: value.id, count: quantity(value.count) });
+}
+
+function beaconRow(value: BeaconSettings): BeaconRow {
+  return prune({
+    id: value.id,
+    count: quantity(value.count),
+    total: quantity(value.total),
+    modules: value.modules?.map(moduleRow),
+  });
+}
+
+export function recipeOverrideRow(
+  recipeId: string,
+  stored: RecipeState,
+  settings: RecipeSettings | undefined,
+  data: AdjustedDataset,
+): RecipeOverrideRow {
+  const machineId = ifSet(
+    stored.machineId,
+    settings?.machineId ?? stored.machineId,
+  );
+  return prune({
+    recipeId,
+    recipe: data.recipeRecord[recipeId]?.name,
+    machineId,
+    machine: machineId ? data.itemRecord[machineId]?.name : undefined,
+    fuelId: ifSet(stored.fuelId, settings?.fuelId ?? stored.fuelId),
+    modules: ifSet(stored.modules, settings?.modules ?? stored.modules)?.map(
+      moduleRow,
+    ),
+    beacons: ifSet(stored.beacons, settings?.beacons ?? stored.beacons)?.map(
+      beaconRow,
+    ),
+    overclock: quantity(
+      ifSet(stored.overclock, settings?.overclock ?? stored.overclock),
+    ),
+    cost: quantity(ifSet(stored.cost, settings?.cost ?? stored.cost)),
+    productivity: quantity(
+      ifSet(stored.productivity, settings?.productivity ?? stored.productivity),
+    ),
+  });
+}
+
+export function itemOverrideRow(
+  itemId: string,
+  stored: ItemState,
+  settings: ItemSettings | undefined,
+  data: AdjustedDataset,
+): ItemOverrideRow {
+  return prune({
+    itemId,
+    item: data.itemRecord[itemId]?.name,
+    beltId: ifSet(stored.beltId, settings?.beltId ?? stored.beltId),
+    stack: quantity(ifSet(stored.stack, settings?.stack ?? stored.stack)),
+    wagonId: ifSet(stored.wagonId, settings?.wagonId ?? stored.wagonId),
+    excludeRockets: ifSet(
+      stored.excludeRockets,
+      settings?.excludeRockets ?? stored.excludeRockets,
+    ),
+  });
 }

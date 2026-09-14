@@ -259,6 +259,129 @@ async function main(): Promise<void> {
     'iron-plate',
   );
 
+  console.log('per-recipe overrides');
+  /**
+   * Copper cable for 60 circuits/min needs 1.5 assembling machine 1s. The same
+   * work takes 0.6 of the 2.5x faster machine 3, and 0.2 once four speed module
+   * 3s triple that machine's speed, so these numbers check that an override
+   * reaches the solver rather than only the url.
+   */
+  const faster = await engine.solve({
+    modId: '1.1',
+    objectives: [{ targetId: 'electronic-circuit', value: 60 }],
+    recipeOverrides: { 'copper-cable': { machineId: 'assembling-machine-3' } },
+  });
+  equal(
+    'runs the recipe on the chosen machine',
+    machineCount(faster, 'copper-cable'),
+    0.6,
+  );
+  equal(
+    'reports the override',
+    faster.recipeOverrides?.[0]?.machineId,
+    'assembling-machine-3',
+  );
+  equal(
+    'leaves other recipes alone',
+    machineCount(faster, 'electronic-circuit'),
+    1,
+  );
+
+  const moduled = await engine.editSheet(faster.url, {
+    recipeOverrides: {
+      'copper-cable': { modules: [{ id: 'speed-module-3', count: 4 }] },
+    },
+  });
+  equal(
+    'modules speed the recipe up',
+    machineCount(moduled, 'copper-cable'),
+    0.2,
+  );
+  equal(
+    'keeps the machine set earlier',
+    moduled.recipeOverrides?.[0]?.machineId,
+    'assembling-machine-3',
+  );
+  equal(
+    'names the module it stored',
+    moduled.recipeOverrides?.[0]?.modules?.[0]?.id,
+    'speed-module-3',
+  );
+
+  const moduledBack = await engine.describeSheet(moduled.url);
+  equal('overrides survive the url', moduledBack.url, moduled.url);
+  equal(
+    'and come back identically',
+    JSON.stringify(moduledBack.recipeOverrides),
+    JSON.stringify(moduled.recipeOverrides),
+  );
+
+  /** A recipe's productivity is a percentage added to its output. */
+  const productive = await engine.solve({
+    modId: '1.1',
+    objectives: [{ targetId: 'iron-plate', value: 60 }],
+    recipeOverrides: { 'iron-plate': { productivity: 100 } },
+  });
+  equal('doubled output halves the ore', itemRate(productive, 'iron-ore'), 30);
+
+  console.log('per-item overrides');
+  const plainBelt = await engine.solve({
+    modId: '1.1',
+    objectives: [{ targetId: 'iron-plate', value: 600 }],
+  });
+  equal(
+    '600 plates/min fills 2/3 of a transport belt',
+    plainBelt.steps.find((s) => s.itemId === 'iron-plate')?.belts?.exact,
+    '2/3',
+  );
+  const express = await engine.editSheet(plainBelt.url, {
+    itemOverrides: { 'iron-plate': { beltId: 'express-transport-belt' } },
+  });
+  equal(
+    'and 2/9 of an express belt',
+    express.steps.find((s) => s.itemId === 'iron-plate')?.belts?.exact,
+    '2/9',
+  );
+  equal(
+    'reports the item override',
+    express.itemOverrides?.[0]?.beltId,
+    'express-transport-belt',
+  );
+  const expressBack = await engine.describeSheet(express.url);
+  equal('item overrides survive the url', expressBack.url, express.url);
+  equal(
+    'and come back identically',
+    JSON.stringify(expressBack.itemOverrides),
+    JSON.stringify(express.itemOverrides),
+  );
+
+  console.log('overrides can be dropped again');
+  const nulled = await engine.editSheet(moduled.url, {
+    recipeOverrides: { 'copper-cable': { modules: null } },
+  });
+  equal(
+    'null drops one field',
+    nulled.recipeOverrides?.[0]?.modules,
+    undefined,
+  );
+  equal(
+    'and leaves the rest',
+    nulled.recipeOverrides?.[0]?.machineId,
+    'assembling-machine-3',
+  );
+
+  const bare = await engine.editSheet(moduled.url, {
+    resetRecipeIds: ['copper-cable'],
+  });
+  equal('resetting drops every override', bare.recipeOverrides, undefined);
+  equal('leaving the sheet as it started', bare.url, circuits.url);
+
+  const bareItem = await engine.editSheet(express.url, {
+    resetItemIds: ['iron-plate'],
+  });
+  equal('the same holds for items', bareItem.itemOverrides, undefined);
+  equal('and their url', bareItem.url, plainBelt.url);
+
   console.log('unsolvable sheets explain themselves');
   const unbounded = await engine.solve({
     objectives: [
@@ -291,6 +414,33 @@ async function main(): Promise<void> {
   );
   await throws('unknown objective id on edit', () =>
     engine.editSheet(base.url, { removeObjectiveIds: ['99'] }),
+  );
+  await throws('unknown recipe in overrides', () =>
+    engine.solve({
+      objectives: [{ targetId: 'coal', value: 1 }],
+      recipeOverrides: { 'not-a-recipe': { cost: 1 } },
+    }),
+  );
+  await throws('a machine that cannot run the recipe', () =>
+    engine.solve({
+      modId: '1.1',
+      objectives: [{ targetId: 'iron-plate', value: 1 }],
+      recipeOverrides: { 'iron-plate': { machineId: 'assembling-machine-1' } },
+    }),
+  );
+  await throws('modules on a machine with no slots', () =>
+    engine.solve({
+      modId: '1.1',
+      objectives: [{ targetId: 'water', value: 1 }],
+      recipeOverrides: { water: { modules: [{ id: 'speed-module' }] } },
+    }),
+  );
+  await throws('a belt that is really a pipe', () =>
+    engine.solve({
+      modId: '1.1',
+      objectives: [{ targetId: 'iron-plate', value: 1 }],
+      itemOverrides: { 'iron-plate': { beltId: 'pipe' } },
+    }),
   );
 
   console.log('');

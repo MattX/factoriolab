@@ -5,13 +5,23 @@ import './shims';
 import { EnvironmentInjector } from '@angular/core';
 
 import { datasets, DEFAULT_MOD } from '~/data/datasets';
+import { Option } from '~/option/option';
 import { Rational, rational } from '~/rational/rational';
+import { BeaconSettings } from '~/state/beacon-settings';
+import { Hydration } from '~/state/hydration';
+import { ItemsStore } from '~/state/items/items-store';
+import { MachinesStore } from '~/state/machines/machines-store';
+import { ModuleSettings } from '~/state/module-settings';
 import { ObjectiveState } from '~/state/objectives/objective';
 import { ObjectivesStore } from '~/state/objectives/objectives-store';
+import { Options } from '~/state/options';
+import { RecipeSettings } from '~/state/recipes/recipe-settings';
+import { RecipeState } from '~/state/recipes/recipe-state';
 import { RecipesStore } from '~/state/recipes/recipes-store';
 import { AdjustedDataset } from '~/state/settings/dataset';
 import { SettingsState } from '~/state/settings/settings-state';
 import { SettingsStore } from '~/state/settings/settings-store';
+import { TableStore } from '~/state/table/table-store';
 import { Translate } from '~/translate/translate';
 
 import { createInjector, EngineContext } from './bootstrap';
@@ -19,6 +29,8 @@ import {
   DISPLAY_RATES,
   DisplayRateName,
   displayRateName,
+  ItemOverrideRow,
+  itemOverrideRow,
   ObjectiveRow,
   objectiveRow,
   OBJECTIVE_TYPES,
@@ -27,6 +39,8 @@ import {
   ObjectiveUnitName,
   Quantity,
   quantity,
+  RecipeOverrideRow,
+  recipeOverrideRow,
   StepRow,
   stepRow,
 } from './serialize';
@@ -63,10 +77,58 @@ export interface SettingsSpec {
   preset?: number;
 }
 
+export interface ModuleSpec {
+  /** Module item id, or `''` for an explicitly empty slot. */
+  id: string;
+  /** Slots filled with this module. Defaults to every slot the machine has. */
+  count?: number | string;
+}
+
+export interface BeaconSpec {
+  /** Beacon item id. */
+  id: string;
+  /** Beacons affecting each machine. */
+  count?: number | string;
+  /** Beacons built in total, when they are shared between machines. */
+  total?: number | string;
+  modules?: ModuleSpec[];
+}
+
+/**
+ * One recipe's overrides. Every field is optional; `null` drops an override and
+ * returns that field to the sheet-wide default.
+ */
+export interface RecipeOverrideSpec {
+  machineId?: string | null;
+  fuelId?: string | null;
+  modules?: ModuleSpec[] | null;
+  beacons?: BeaconSpec[] | null;
+  /** Percent; 100 is the machine's rated speed. */
+  overclock?: number | string | null;
+  /** Solver cost, raised to make the solver avoid this recipe. */
+  cost?: number | string | null;
+  /** Percent added to the recipe's output. */
+  productivity?: number | string | null;
+}
+
+/** One item's overrides. `null` returns a field to the sheet-wide default. */
+export interface ItemOverrideSpec {
+  /** Belt for a solid item, pipe for a fluid. */
+  beltId?: string | null;
+  /** Items per stack, for belt and wagon counts. */
+  stack?: number | string | null;
+  wagonId?: string | null;
+  excludeRockets?: boolean | null;
+}
+
 export interface SheetSpec {
   modId?: string;
   objectives: ObjectiveSpec[];
   settings?: SettingsSpec;
+  /** Keyed by recipe id. */
+  recipeOverrides?: Record<string, RecipeOverrideSpec>;
+  /** Keyed by item id. */
+  itemOverrides?: Record<string, ItemOverrideSpec>;
 }
 
 export interface SheetEdits {
@@ -77,6 +139,14 @@ export interface SheetEdits {
   removeObjectiveIds?: string[];
   /** Merged over the sheet's current settings. */
   settings?: SettingsSpec;
+  /** Merged over the sheet's current overrides, keyed by recipe id. */
+  recipeOverrides?: Record<string, RecipeOverrideSpec>;
+  /** Merged over the sheet's current overrides, keyed by item id. */
+  itemOverrides?: Record<string, ItemOverrideSpec>;
+  /** Drops every override on these recipes. */
+  resetRecipeIds?: string[];
+  /** Drops every override on these items. */
+  resetItemIds?: string[];
 }
 
 export interface SheetResult {
@@ -87,6 +157,10 @@ export interface SheetResult {
   displayRate: DisplayRateName;
   status: string;
   objectives: ObjectiveRow[];
+  /** Only the recipes this sheet overrides. */
+  recipeOverrides?: RecipeOverrideRow[];
+  /** Only the items this sheet overrides. */
+  itemOverrides?: ItemOverrideRow[];
   steps: StepRow[];
   totals: {
     machines: { id: string; name?: string; count: Quantity }[];
@@ -123,33 +197,45 @@ interface ResettableStore {
 export class LabEngine {
   private queue: Promise<unknown> = Promise.resolve();
 
+  /**
+   * `Hydration` and `Options` are the app's own defaulting rules for modules and
+   * beacons. Per-recipe overrides are stored as the difference from those
+   * defaults, so the engine has to consult them rather than reimplement them.
+   */
+  private readonly hydration: Hydration;
+  private readonly options: Options;
+
   private constructor(
     private readonly context: EngineContext,
     private readonly settingsStore: SettingsStore,
     private readonly objectivesStore: ObjectivesStore,
     private readonly recipesStore: RecipesStore,
+    private readonly itemsStore: ItemsStore,
+    private readonly machinesStore: MachinesStore,
     private readonly translate: Translate,
     private readonly stores: ResettableStore[],
     private readonly router: SheetRouter,
-  ) {}
+  ) {
+    this.hydration = context.injector.get(Hydration);
+    this.options = context.injector.get(Options);
+  }
 
   static async create(): Promise<LabEngine> {
     const context = await createInjector();
     const { injector } = context;
 
-    const { ItemsStore } = await import('~/state/items/items-store');
-    const { MachinesStore } = await import('~/state/machines/machines-store');
-    const { TableStore } = await import('~/state/table/table-store');
     const settingsStore = injector.get(SettingsStore);
     const objectivesStore = injector.get(ObjectivesStore);
     const recipesStore = injector.get(RecipesStore);
+    const itemsStore = injector.get(ItemsStore);
+    const machinesStore = injector.get(MachinesStore);
     const translate = injector.get(Translate);
 
     const stores = [
       objectivesStore,
-      injector.get(ItemsStore),
+      itemsStore,
       recipesStore,
-      injector.get(MachinesStore),
+      machinesStore,
       settingsStore,
       injector.get(TableStore),
     ] as unknown as ResettableStore[];
@@ -170,6 +256,8 @@ export class LabEngine {
       settingsStore,
       objectivesStore,
       recipesStore,
+      itemsStore,
+      machinesStore,
       translate,
       stores,
       router,
@@ -258,6 +346,7 @@ export class LabEngine {
     return this.run(async () => {
       await this.reset(spec.modId ?? DEFAULT_MOD);
       this.applySettings(spec.settings);
+      this.applyOverrides(spec);
       this.replaceObjectives(spec.objectives);
       return await this.read();
     });
@@ -283,6 +372,16 @@ export class LabEngine {
       }
 
       this.applySettings(edits.settings);
+
+      for (const recipeId of edits.resetRecipeIds ?? []) {
+        this.checkIds([recipeId], this.dataset().recipeRecord, 'recipe');
+        this.recipesStore.resetId(recipeId);
+      }
+      for (const itemId of edits.resetItemIds ?? []) {
+        this.checkIds([itemId], this.dataset().itemRecord, 'item');
+        this.itemsStore.resetId(itemId);
+      }
+      this.applyOverrides(edits);
 
       if (edits.setObjectives) this.replaceObjectives(edits.setObjectives);
       for (const id of edits.removeObjectiveIds ?? []) {
@@ -424,6 +523,266 @@ export class LabEngine {
     this.settingsStore.apply(partial);
   }
 
+  private applyOverrides(spec: {
+    recipeOverrides?: Record<string, RecipeOverrideSpec>;
+    itemOverrides?: Record<string, ItemOverrideSpec>;
+  }): void {
+    for (const [recipeId, override] of Object.entries(
+      spec.recipeOverrides ?? {},
+    ))
+      this.applyRecipeOverride(recipeId, override);
+    for (const [itemId, override] of Object.entries(spec.itemOverrides ?? {}))
+      this.applyItemOverride(itemId, override);
+  }
+
+  /**
+   * Overrides are stored as the difference from the sheet's defaults, the way
+   * the web app stores them, so that a sheet's url stays short and a setting the
+   * agent did not mean to pin does not freeze at today's default.
+   *
+   * Order matters within a recipe: the machine decides which fuels and modules
+   * are on offer and what the default overclock is, so it is stored first and
+   * the recipe's settings re-read before the remaining fields resolve.
+   */
+  private applyRecipeOverride(
+    recipeId: string,
+    override: RecipeOverrideSpec,
+  ): void {
+    this.checkIds([recipeId], this.dataset().recipeRecord, 'recipe');
+
+    if (override.machineId !== undefined) {
+      const before = this.recipeSettings(recipeId);
+      this.recipesStore.updateRecordField(
+        recipeId,
+        'machineId',
+        override.machineId == null
+          ? undefined
+          : this.checkOption(
+              override.machineId,
+              before.machineOptions,
+              `machine for recipe '${recipeId}'`,
+            ),
+        before.defaultMachineId,
+      );
+    }
+
+    const settings = this.recipeSettings(recipeId);
+    const partial: Partial<RecipeState> = {};
+
+    if (override.fuelId !== undefined)
+      partial.fuelId =
+        override.fuelId == null
+          ? undefined
+          : this.checkOption(
+              override.fuelId,
+              settings.fuelOptions,
+              `fuel for recipe '${recipeId}'`,
+            );
+
+    if (override.modules !== undefined)
+      partial.modules =
+        override.modules == null
+          ? undefined
+          : this.toModules(recipeId, settings, override.modules);
+
+    if (override.beacons !== undefined)
+      partial.beacons =
+        override.beacons == null
+          ? undefined
+          : this.toBeacons(recipeId, settings, override.beacons);
+
+    this.recipesStore.updateRecord(recipeId, partial);
+
+    if (override.overclock !== undefined)
+      this.recipesStore.updateRecordField(
+        recipeId,
+        'overclock',
+        this.toOptionalRational(
+          override.overclock,
+          `overclock for recipe '${recipeId}'`,
+        ),
+        settings.defaultOverclock,
+      );
+    if (override.cost !== undefined)
+      this.recipesStore.updateRecordField(
+        recipeId,
+        'cost',
+        this.toOptionalRational(override.cost, `cost for recipe '${recipeId}'`),
+      );
+    if (override.productivity !== undefined)
+      this.recipesStore.updateRecordField(
+        recipeId,
+        'productivity',
+        this.toOptionalRational(
+          override.productivity,
+          `productivity for recipe '${recipeId}'`,
+        ),
+        this.settingsStore.settings().recipeBonus[recipeId],
+      );
+  }
+
+  private applyItemOverride(itemId: string, override: ItemOverrideSpec): void {
+    this.checkIds([itemId], this.dataset().itemRecord, 'item');
+
+    const item = this.dataset().itemRecord[itemId];
+    const settings = this.itemsStore.settings()[itemId];
+    const options = this.settingsStore.options();
+
+    if (override.beltId !== undefined)
+      this.itemsStore.updateRecordField(
+        itemId,
+        'beltId',
+        override.beltId == null
+          ? undefined
+          : this.checkOption(
+              override.beltId,
+              item.stack ? options.belts : options.pipes,
+              `${item.stack ? 'belt' : 'pipe'} for item '${itemId}'`,
+            ),
+        settings.defaultBeltId,
+      );
+    if (override.stack !== undefined)
+      this.itemsStore.updateRecordField(
+        itemId,
+        'stack',
+        this.toOptionalRational(override.stack, `stack for item '${itemId}'`),
+        settings.defaultStack,
+      );
+    if (override.wagonId !== undefined)
+      this.itemsStore.updateRecordField(
+        itemId,
+        'wagonId',
+        override.wagonId == null
+          ? undefined
+          : this.checkOption(
+              override.wagonId,
+              item.stack ? options.cargoWagons : options.fluidWagons,
+              `wagon for item '${itemId}'`,
+            ),
+        settings.defaultWagonId,
+      );
+    if (override.excludeRockets !== undefined)
+      this.itemsStore.updateRecordField(
+        itemId,
+        'excludeRockets',
+        override.excludeRockets ?? undefined,
+      );
+  }
+
+  private recipeSettings(recipeId: string): RecipeSettings {
+    return this.recipesStore.settings()[recipeId];
+  }
+
+  private toModules(
+    recipeId: string,
+    settings: RecipeSettings,
+    specs: ModuleSpec[],
+  ): ModuleSettings[] | undefined {
+    const { machineId, moduleOptions } = settings;
+    const machine = machineId
+      ? this.dataset().machineRecord[machineId]
+      : undefined;
+    if (machineId == null || machine?.modules == null || moduleOptions == null)
+      throw new EngineInputError(
+        `Recipe '${recipeId}' runs on ${machineId ? `'${machineId}'` : 'a machine'}, which takes no modules.`,
+      );
+
+    const modules = specs.map((module) => ({
+      id: this.checkOption(
+        module.id,
+        moduleOptions,
+        `module for recipe '${recipeId}'`,
+      ),
+      count: this.toOptionalRational(
+        module.count,
+        `module count for recipe '${recipeId}'`,
+      ),
+    }));
+
+    return this.hydration.dehydrateModules(
+      modules,
+      moduleOptions,
+      this.settingsStore.settings().moduleRankIds,
+      machine.modules,
+      this.machinesStore.settings()[machineId].modules,
+    );
+  }
+
+  private toBeacons(
+    recipeId: string,
+    settings: RecipeSettings,
+    specs: BeaconSpec[],
+  ): BeaconSettings[] | undefined {
+    const data = this.dataset();
+    const { machineId } = settings;
+    if (machineId == null || settings.moduleOptions == null)
+      throw new EngineInputError(
+        `Recipe '${recipeId}' runs on ${machineId ? `'${machineId}'` : 'a machine'}, which takes no beacons.`,
+      );
+
+    const beaconOptions = this.settingsStore.options().beacons;
+    const beacons = specs.map((beacon) => {
+      const id = this.checkOption(
+        beacon.id,
+        beaconOptions,
+        `beacon for recipe '${recipeId}'`,
+      );
+      const moduleOptions = this.options.moduleOptions(
+        data.beaconRecord[id],
+        this.settingsStore.settings(),
+        data,
+      );
+      return {
+        id,
+        count: this.toOptionalRational(
+          beacon.count,
+          `beacon count for recipe '${recipeId}'`,
+        ),
+        total: this.toOptionalRational(
+          beacon.total,
+          `beacon total for recipe '${recipeId}'`,
+        ),
+        modules: beacon.modules?.map((module) => ({
+          id: this.checkOption(
+            module.id,
+            moduleOptions,
+            `module for beacon '${id}'`,
+          ),
+          count: this.toOptionalRational(
+            module.count,
+            `beacon module count for recipe '${recipeId}'`,
+          ),
+        })),
+      };
+    });
+
+    return this.hydration.dehydrateBeacons(
+      beacons,
+      this.machinesStore.settings()[machineId].beacons,
+    );
+  }
+
+  private toOptionalRational(
+    value: number | string | null | undefined,
+    label: string,
+  ): Rational | undefined {
+    return value == null ? undefined : toRational(value, label);
+  }
+
+  private checkOption(
+    id: string,
+    options: Option[] | undefined,
+    label: string,
+  ): string {
+    if (options?.some((option) => option.value === id)) return id;
+    const available = (options ?? [])
+      .map((option) => (option.value === '' ? '"" (none)' : option.value))
+      .join(', ');
+    throw new EngineInputError(
+      `'${id}' is not a valid ${label}. Valid ids: ${available || 'none'}.`,
+    );
+  }
+
   private checkIds(
     ids: string[],
     known: Record<string, unknown>,
@@ -513,6 +872,16 @@ export class LabEngine {
       objectives: Object.keys(objectives).map((id) =>
         objectiveRow(objectives[id], data),
       ),
+      recipeOverrides: rows(
+        this.recipesStore.state(),
+        this.recipesStore.settings(),
+        (id, stored, settings) => recipeOverrideRow(id, stored, settings, data),
+      ),
+      itemOverrides: rows(
+        this.itemsStore.state(),
+        this.itemsStore.settings(),
+        (id, stored, settings) => itemOverrideRow(id, stored, settings, data),
+      ),
       steps: this.objectivesStore.steps().map((step) => stepRow(step, data)),
       totals: {
         machines: Object.keys(totals.machines).map((id) => ({
@@ -531,6 +900,20 @@ export class LabEngine {
       notes,
     };
   }
+}
+
+/**
+ * Turns a record store's overrides into reportable rows, or `undefined` when the
+ * sheet overrides nothing, so an untouched sheet reports no override sections.
+ */
+function rows<State, Settings, Row>(
+  state: Record<string, State>,
+  settings: Record<string, Settings>,
+  build: (id: string, stored: State, settings: Settings | undefined) => Row,
+): Row[] | undefined {
+  const ids = Object.keys(state);
+  if (ids.length === 0) return undefined;
+  return ids.map((id) => build(id, state[id], settings[id]));
 }
 
 /** Solver messages are authored as HTML for the web UI. */

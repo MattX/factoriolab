@@ -58,6 +58,78 @@ const settingsSchema = z.object({
     .describe('Machine tier preset index; 0 is the minimum tier.'),
 });
 
+const rateSchema = z.union([z.number(), z.string()]);
+
+/** `null` drops an override and returns the field to the sheet-wide default. */
+const nullableRate = rateSchema.nullable();
+
+const moduleSchema = z.object({
+  id: z
+    .string()
+    .describe('Module item id, or "" for an explicitly empty slot.'),
+  count: rateSchema
+    .optional()
+    .describe(
+      'Slots filled with this module. Defaults to every slot the machine has, so give a count when listing more than one module.',
+    ),
+});
+
+const beaconSchema = z.object({
+  id: z.string().describe('Beacon item id, e.g. "beacon".'),
+  count: rateSchema.optional().describe('Beacons affecting each machine.'),
+  total: rateSchema
+    .optional()
+    .describe('Beacons built in total, when they are shared between machines.'),
+  modules: z.array(moduleSchema).optional(),
+});
+
+const recipeOverridesSchema = z
+  .record(
+    z.string(),
+    z.object({
+      machineId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Machine to run this recipe on, e.g. "electric-furnace".'),
+      fuelId: z.string().nullable().optional(),
+      modules: z.array(moduleSchema).nullable().optional(),
+      beacons: z.array(beaconSchema).nullable().optional(),
+      overclock: nullableRate
+        .optional()
+        .describe("Percent; 100 is the machine's rated speed."),
+      cost: nullableRate
+        .optional()
+        .describe('Solver cost; raise it to push the solver off this recipe.'),
+      productivity: nullableRate
+        .optional()
+        .describe("Percent added to the recipe's output."),
+    }),
+  )
+  .describe(
+    'Per-recipe overrides, keyed by recipe id. Anything omitted keeps following the sheet-wide settings; null on a field drops the override again.',
+  );
+
+const itemOverridesSchema = z
+  .record(
+    z.string(),
+    z.object({
+      beltId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Belt for a solid item, pipe for a fluid.'),
+      stack: nullableRate
+        .optional()
+        .describe('Items per stack, used for belt and wagon counts.'),
+      wagonId: z.string().nullable().optional(),
+      excludeRockets: z.boolean().nullable().optional(),
+    }),
+  )
+  .describe(
+    'Per-item overrides, keyed by item id. Anything omitted keeps following the sheet-wide settings; null on a field drops the override again.',
+  );
+
 const urlSchema = z
   .string()
   .describe(
@@ -96,6 +168,8 @@ function summarize(result: SheetResult, maxSteps: number): unknown {
     displayRate: result.displayRate,
     status: result.status,
     objectives: result.objectives,
+    recipeOverrides: result.recipeOverrides,
+    itemOverrides: result.itemOverrides,
     steps,
     omittedSteps:
       result.steps.length > steps.length
@@ -131,6 +205,9 @@ async function main(): Promise<void> {
         '',
         'Item and recipe ids differ per mod set. Call search_ids before guessing an id,',
         'and list_mods to pick a mod set (default 2x1, Factorio Space Age).',
+        '',
+        'settings covers the whole sheet; recipeOverrides and itemOverrides pin one',
+        'recipe or one item, for the machine, modules, or beacons on a single step.',
       ].join('\n'),
     },
   );
@@ -177,17 +254,32 @@ async function main(): Promise<void> {
     {
       title: 'Solve a new sheet',
       description:
-        'Builds a sheet from scratch and solves it, returning the required machines, item rates, power, and a url that reopens the sheet.',
+        'Builds a sheet from scratch and solves it, returning the required machines, item rates, power, and a url that reopens the sheet. Use settings for sheet-wide choices, and recipeOverrides or itemOverrides to pin one recipe or item.',
       inputSchema: {
         modId: z.string().optional().describe('Defaults to "2x1".'),
         objectives: z.array(objectiveSchema).min(1),
         settings: settingsSchema.optional(),
+        recipeOverrides: recipeOverridesSchema.optional(),
+        itemOverrides: itemOverridesSchema.optional(),
         maxSteps: maxStepsSchema,
       },
     },
-    async ({ modId, objectives, settings, maxSteps }) => {
+    async ({
+      modId,
+      objectives,
+      settings,
+      recipeOverrides,
+      itemOverrides,
+      maxSteps,
+    }) => {
       try {
-        const result = await engine.solve({ modId, objectives, settings });
+        const result = await engine.solve({
+          modId,
+          objectives,
+          settings,
+          recipeOverrides,
+          itemOverrides,
+        });
         return text(summarize(result, maxSteps ?? 100));
       } catch (err) {
         return failure(err);
@@ -219,7 +311,7 @@ async function main(): Promise<void> {
     {
       title: 'Edit an existing sheet',
       description:
-        'Applies changes to a sheet URL and re-solves it, returning a new url. Use setObjectives to replace every objective, or addObjectives and removeObjectiveIds for incremental edits. Settings are merged over the sheet’s own.',
+        'Applies changes to a sheet URL and re-solves it, returning a new url. Use setObjectives to replace every objective, or addObjectives and removeObjectiveIds for incremental edits. Settings and overrides are merged over the sheet’s own; resetRecipeIds and resetItemIds clear overrides outright.',
       inputSchema: {
         url: urlSchema,
         modId: z
@@ -233,6 +325,16 @@ async function main(): Promise<void> {
           .optional()
           .describe('Objective ids as reported in the objectives list.'),
         settings: settingsSchema.optional(),
+        recipeOverrides: recipeOverridesSchema.optional(),
+        itemOverrides: itemOverridesSchema.optional(),
+        resetRecipeIds: z
+          .array(z.string())
+          .optional()
+          .describe('Drops every override on these recipes.'),
+        resetItemIds: z
+          .array(z.string())
+          .optional()
+          .describe('Drops every override on these items.'),
         maxSteps: maxStepsSchema,
       },
     },
