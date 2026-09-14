@@ -1,0 +1,21 @@
+{
+  /**
+   * The engine runs FactorioLab's own sources on Node, so they must be
+   * transpiled by tsc rather than by a bundler's fast path: `Store` reads a
+   * constructor parameter property from a field initializer, and esbuild-family
+   * transpilers (Bun, tsx) emit those assignments in the opposite order.
+   */
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./.build",
+    "rootDir": "..",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmitOnError": false,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["./.build/**"]
+}
