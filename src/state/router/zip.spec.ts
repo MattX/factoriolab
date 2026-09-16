@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 
 import { rational } from '~/rational/rational';
 
-import { ZEMPTY, ZFALSE, ZTRUE } from './constants';
+import { ZEMPTY, ZESCAPE, ZFALSE, ZTRUE } from './constants';
 import { Zip } from './zip';
 
 describe('Zip', () => {
@@ -34,6 +34,24 @@ describe('Zip', () => {
 
     it('should handle empty', () => {
       expect(service.zipString('')).toEqual(ZEMPTY);
+    });
+  });
+
+  describe('zipText', () => {
+    it('should handle undefined', () => {
+      expect(service.zipText(undefined)).toEqual('');
+    });
+
+    it('should handle empty', () => {
+      expect(service.zipText('')).toEqual(ZEMPTY);
+    });
+
+    it('should pass through text with no special characters', () => {
+      expect(service.zipText('Iron smelting')).toEqual('Iron smelting');
+    });
+
+    it('should escape separators and url delimiters', () => {
+      expect(service.zipText('a*b~c&d=e%f!g')).toEqual('a!fb!ac!nd!ee!pf!sg');
     });
   });
 
@@ -82,6 +100,20 @@ describe('Zip', () => {
 
     it('should handle empty', () => {
       expect(service.zipNString('', [])).toEqual(ZEMPTY);
+    });
+  });
+
+  describe('zipNArray', () => {
+    it('should handle undefined', () => {
+      expect(service.zipNArray(undefined, [])).toEqual('');
+    });
+
+    it('should handle empty', () => {
+      expect(service.zipNArray([], [])).toEqual(ZEMPTY);
+    });
+
+    it('should handle defined', () => {
+      expect(service.zipNArray(['b', 'a'], ['a', 'b'])).toEqual('B~A');
     });
   });
 
@@ -226,6 +258,30 @@ describe('Zip', () => {
 
     it('should parse empty', () => {
       expect(service.parseString(ZEMPTY)).toEqual('');
+    });
+  });
+
+  describe('parseText', () => {
+    it('should handle undefined', () => {
+      expect(service.parseText(undefined)).toBeUndefined();
+    });
+
+    it('should handle empty', () => {
+      expect(service.parseText(ZEMPTY)).toEqual('');
+    });
+
+    it('should round trip every escaped character', () => {
+      const text = 'a*b~c&d=e%f!g';
+      expect(service.parseText(service.zipText(text))).toEqual(text);
+    });
+
+    it('should round trip text which looks like an escape', () => {
+      const text = '!f!!s%2A';
+      expect(service.parseText(service.zipText(text))).toEqual(text);
+    });
+
+    it('should drop a dangling escape', () => {
+      expect(service.parseText(`a${ZESCAPE}`)).toEqual('a');
     });
   });
 

@@ -11,6 +11,8 @@ export interface LabParams {
   e?: string[];
   /** `object[]` Beacon settings */
   b?: string[];
+  /** `object[]` Groups */
+  g?: string[];
   /** `string` Version */
   v?: string;
   /** `string` Zip */
@@ -109,4 +111,6 @@ export interface LabParams {
   tpg?: string;
   /** `number` Table rows */
   tro?: string;
+  /** `string` Table selected group */
+  tgr?: string;
 }

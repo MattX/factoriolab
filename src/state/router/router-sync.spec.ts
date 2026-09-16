@@ -12,6 +12,7 @@ import { RecipeId } from '~/tests/recipe-id';
 import { TestModule } from '~/tests/test-module';
 import { spread } from '~/utils/object';
 
+import { GroupState } from '../groups/group-state';
 import { ItemState } from '../items/item-state';
 import { ObjectiveState } from '../objectives/objective';
 import { ObjectiveType } from '../objectives/objective-type';
@@ -60,6 +61,14 @@ const mockItemsState: Record<string, ItemState> = {
   [ItemId.SteelChest]: {
     beltId: ItemId.TransportBelt,
     wagonId: ItemId.CargoWagon,
+  },
+};
+const mockGroupsState: Record<string, GroupState> = {
+  ['1']: { id: '1', rootItemIds: [ItemId.SteelChest] },
+  ['2']: {
+    id: '2',
+    name: 'Plates',
+    rootItemIds: [ItemId.IronPlate, ItemId.CopperPlate],
   },
 };
 const mockRecipesState: Record<string, RecipeState> = {
@@ -194,6 +203,7 @@ const mockZipPartial: ZipData<LabParams> = {
 
 const mockEmpty: PartialState = {
   objectivesState: undefined,
+  groupsState: undefined,
   itemsState: undefined,
   recipesState: undefined,
   machinesState: undefined,
@@ -203,6 +213,7 @@ const mockEmpty: PartialState = {
 
 const mockState: PartialState = {
   objectivesState: mockObjectivesState,
+  groupsState: undefined,
   itemsState: mockItemsState,
   recipesState: mockRecipesState,
   machinesState: undefined,
@@ -212,6 +223,7 @@ const mockState: PartialState = {
 
 const mockTableState: TableState = {
   filter: 'filter',
+  group: '1',
   sort: 'sort',
   asc: true,
   page: 1,
@@ -294,6 +306,7 @@ describe('RouterSync', () => {
     it('should zip state', () => {
       const result = service.zipState({
         objectives: {},
+        groups: {},
         items: {},
         recipes: {},
         machines: {},
@@ -308,6 +321,7 @@ describe('RouterSync', () => {
     it('should zip full state', () => {
       const result = service.zipState({
         objectives: mockObjectivesState,
+        groups: {},
         items: mockItemsState,
         recipes: mockRecipesState,
         machines: {},
@@ -772,6 +786,20 @@ describe('RouterSync', () => {
       mockRoute.next({}, { z: 'eJyrsjU0AAADNQEZ', v: '10' });
     });
 
+    it('should unzip a bare group, escaped name and all', (done) => {
+      dispatch.and.callFake((v: PartialState) => {
+        expect(v.groupsState).toEqual({
+          ['1']: {
+            id: '1',
+            name: 'Coal*dust',
+            rootItemIds: [ItemId.Coal],
+          },
+        });
+        done();
+      });
+      mockRoute.next({}, { g: 'coal*Coal!fdust', v: service['version'] });
+    });
+
     it('should unzip v10', (done) => {
       dispatch.and.callFake((v) => {
         expect(v).toEqual(mockStateV10);
@@ -791,6 +819,7 @@ describe('RouterSync', () => {
     it('should dispatch a state', () => {
       const load: jasmine.Spy[] = [];
       load.push(spyOn(service['objectivesStore'], 'load'));
+      load.push(spyOn(service['groupsStore'], 'load'));
       load.push(spyOn(service['itemsStore'], 'load'));
       load.push(spyOn(service['recipesStore'], 'load'));
       load.push(spyOn(service['machinesStore'], 'load'));
@@ -955,6 +984,58 @@ describe('RouterSync', () => {
     });
   });
 
+  describe('zipGroups', () => {
+    it('should ignore empty state', () => {
+      const zip = mockZipData();
+      service.zipGroups(zip, {}, mockModHash);
+      expect(zip.objectives.bare).toEqual({});
+    });
+
+    it('should zip groups', () => {
+      const zip = mockZipData();
+      service.zipGroups(zip, mockGroupsState, mockModHash);
+      expect(zip.objectives.bare.g).toEqual([
+        'steel-chest',
+        'iron-plate~copper-plate*Plates',
+      ]);
+      expect(zip.objectives.hash.g).toEqual(['C', 'Bm~Bn*Plates']);
+    });
+  });
+
+  describe('unzipGroups', () => {
+    it('should unzip empty', () => {
+      const result = service.unzipGroups({});
+      expect(result).toBeUndefined();
+    });
+
+    it('should unzip bare groups', () => {
+      const result = service.unzipGroups({
+        g: ['steel-chest', 'iron-plate~copper-plate*Plates'],
+      });
+      expect(result).toEqual(mockGroupsState);
+    });
+
+    it('should unzip hashed groups', () => {
+      const result = service.unzipGroups(
+        { g: ['C', 'Bm~Bn*Plates'] },
+        mockModHash,
+      );
+      expect(result).toEqual(mockGroupsState);
+    });
+
+    it('should round trip a name containing separators', () => {
+      const groups: Record<string, GroupState> = {
+        ['1']: { id: '1', name: 'a*b~c&d=e%f', rootItemIds: [ItemId.Coal] },
+      };
+      const zip = mockZipData();
+      service.zipGroups(zip, groups, mockModHash);
+      expect(service.unzipGroups(zip.objectives.bare)).toEqual(groups);
+      expect(service.unzipGroups(zip.objectives.hash, mockModHash)).toEqual(
+        groups,
+      );
+    });
+  });
+
   describe('unzipItems', () => {
     it('should remove unspecified fields', () => {
       const result = service.unzipItems({
@@ -1047,7 +1128,7 @@ describe('RouterSync', () => {
     it('should zip', () => {
       const zip = mockZipData();
       service.zipTable(zip, mockTableState);
-      expect(zip.config.bare).toHaveSize(5);
+      expect(zip.config.bare).toHaveSize(6);
     });
   });
 
@@ -1060,6 +1141,7 @@ describe('RouterSync', () => {
     it('should unzip', () => {
       const result = service.unzipTable({
         tfi: 'filter',
+        tgr: '1',
         tso: 'sort',
         tas: ZTRUE,
         tpg: '1',
