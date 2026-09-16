@@ -1,12 +1,24 @@
 import { inject, Service } from '@angular/core';
 
 import { Rational, rational } from '~/rational/rational';
-import { notNullish } from '~/utils/nullish';
+import { coalesce, notNullish } from '~/utils/nullish';
 
 import { Compression } from './compression';
-import { ZARRAYSEP, ZEMPTY, ZFALSE, ZFIELDSEP, ZTRUE } from './constants';
+import {
+  ZARRAYSEP,
+  ZEMPTY,
+  ZESCAPE,
+  ZESCAPES,
+  ZFALSE,
+  ZFIELDSEP,
+  ZTRUE,
+} from './constants';
 import { LabParams } from './lab-params';
 import { ZipData } from './zip-data';
+
+/** Reverse of `ZESCAPES`, mapping an escape sequence back to its character */
+const unescapes: Record<string, string> = {};
+for (const char of Object.keys(ZESCAPES)) unescapes[ZESCAPES[char][1]] = char;
 
 type KeysMatching<T, V> = {
   [K in keyof T]-?: T[K] extends V ? K : never;
@@ -25,6 +37,19 @@ export class Zip {
     return value ?? '';
   }
 
+  /**
+   * Zips free text, escaping the characters which would otherwise break the
+   * field or the query string apart.
+   */
+  zipText(value: string | undefined): string {
+    if (value == null) return '';
+    if (value === '') return ZEMPTY;
+
+    let result = '';
+    for (const char of value) result += coalesce(ZESCAPES[char], char);
+    return result;
+  }
+
   zipRational(value: Rational | undefined): string {
     return value == null ? '' : value.toString();
   }
@@ -41,6 +66,14 @@ export class Zip {
     if (value == null) return '';
     if (value === '') return ZEMPTY;
     return this.compression.nToId(hash.indexOf(value));
+  }
+
+  zipNArray(value: string[] | undefined, hash: (string | null)[]): string {
+    if (value == null) return '';
+    if (value.length === 0) return ZEMPTY;
+    return value
+      .map((v) => this.compression.nToId(hash.indexOf(v)))
+      .join(ZARRAYSEP);
   }
 
   zipBool(value: boolean | undefined): string {
@@ -153,6 +186,20 @@ export class Zip {
     if (hash != null) return this.parseNString(value, hash);
     if (!value?.length) return undefined;
     return value;
+  }
+
+  /** Parses free text zipped by `zipText`, dropping any dangling escape */
+  parseText(value: string | undefined): string | undefined {
+    if (value === ZEMPTY) return '';
+    if (!value?.length) return undefined;
+
+    let result = '';
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] === ZESCAPE) result += coalesce(unescapes[value[++i]], '');
+      else result += value[i];
+    }
+
+    return result;
   }
 
   parseBool(value: string | undefined): boolean | undefined {

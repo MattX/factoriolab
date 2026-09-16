@@ -88,7 +88,7 @@ export class Migration {
     const result = this.migrateAny(modId, params, isBare, v);
     this.displayWarnings(result.warnings);
 
-    const coerceArrayKeys = ['o', 'i', 'r', 'm', 'e', 'b'] as const;
+    const coerceArrayKeys = ['o', 'i', 'r', 'm', 'e', 'b', 'g'] as const;
     coerceArrayKeys.forEach((k) => {
       const value = result.params[k];
       if (typeof value === 'string') result.params[k] = [value];

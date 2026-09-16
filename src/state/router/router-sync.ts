@@ -24,6 +24,8 @@ import { prune, spread } from '~/utils/object';
 import { storedSignal } from '~/utils/stored-signal';
 
 import { BeaconSettings } from '../beacon-settings';
+import { GroupState } from '../groups/group-state';
+import { GroupsStore } from '../groups/groups-store';
 import { ItemState } from '../items/item-state';
 import { ItemsStore } from '../items/items-store';
 import { MachineState } from '../machines/machine-state';
@@ -77,6 +79,7 @@ export interface ZipState {
 
 interface State {
   objectives: Record<string, ObjectiveState>;
+  groups: Record<string, GroupState>;
   items: Record<string, ItemState>;
   recipes: Record<string, RecipeState>;
   machines: Record<string, MachineState>;
@@ -88,6 +91,7 @@ interface State {
 
 export interface PartialState {
   objectivesState?: Record<string, ObjectiveState>;
+  groupsState?: Record<string, GroupState>;
   itemsState?: Record<string, ItemState>;
   recipesState?: Record<string, RecipeState>;
   machinesState?: Record<string, MachineState>;
@@ -100,6 +104,7 @@ export class RouterSync {
   private readonly appRef = inject(ApplicationRef);
   private readonly router = inject(Router);
   private readonly compression = inject(Compression);
+  private readonly groupsStore = inject(GroupsStore);
   private readonly itemsStore = inject(ItemsStore);
   private readonly machinesStore = inject(MachinesStore);
   private readonly migration = inject(Migration);
@@ -193,6 +198,7 @@ export class RouterSync {
       const hash = this.settingsStore.modHash();
       if (!ready || !hash) return;
       const objectives = this.objectivesStore.state();
+      const groups = this.groupsStore.state();
       const items = this.itemsStore.state();
       const recipes = this.recipesStore.state();
       const machines = this.machinesStore.state();
@@ -202,6 +208,7 @@ export class RouterSync {
 
       this.state.next({
         objectives,
+        groups,
         items,
         recipes,
         machines,
@@ -248,6 +255,7 @@ export class RouterSync {
   zipState(state: State): ZipState {
     const {
       objectives,
+      groups,
       items,
       recipes,
       machines,
@@ -265,6 +273,7 @@ export class RouterSync {
     );
 
     this.zipObjectives(zState, objectives, hash);
+    this.zipGroups(zState, groups, hash);
     this.zipItems(zState, items, hash);
     this.zipRecipes(zState, recipes, hash);
     this.zipMachines(zState, machines, hash);
@@ -414,6 +423,7 @@ export class RouterSync {
     const bs = this.unzipBeacons(params, ms, hash);
     const state: PartialState = {};
     state.objectivesState = this.unzipObjectives(params, ms, bs, hash);
+    state.groupsState = this.unzipGroups(params, hash);
     state.itemsState = this.unzipItems(params, hash);
     state.recipesState = this.unzipRecipes(params, ms, bs, hash);
     state.machinesState = this.unzipMachines(params, ms, bs, hash);
@@ -436,6 +446,7 @@ export class RouterSync {
 
   dispatch(state: PartialState): void {
     this.objectivesStore.load(state.objectivesState);
+    this.groupsStore.load(state.groupsState);
     this.itemsStore.load(state.itemsState);
     this.recipesStore.load(state.recipesState);
     this.machinesStore.load(state.machinesState);
@@ -734,6 +745,61 @@ export class RouterSync {
           '',
         );
       }
+
+      prune(obj);
+      state[id] = obj;
+      index++;
+    }
+
+    return state;
+  }
+
+  /**
+   * Groups are zipped into the objectives section, not the config section:
+   * a group is a subdivision of the current objectives, so it should not
+   * follow the configuration into a sheet opened for a different objective.
+   */
+  zipGroups(
+    data: ZipState,
+    groups: Record<string, GroupState>,
+    hash: ModHash,
+  ): void {
+    const ids = Object.keys(groups);
+    if (!ids.length) return;
+
+    data.objectives.bare.g = [];
+    data.objectives.hash.g = [];
+    for (const id of ids) {
+      const group = groups[id];
+      const name = this.zip.zipText(group.name);
+      data.objectives.bare.g.push(
+        this.zip.zipFields([this.zip.zipArray(group.rootItemIds), name]),
+      );
+      data.objectives.hash.g.push(
+        this.zip.zipFields([
+          this.zip.zipNArray(group.rootItemIds, hash.items),
+          name,
+        ]),
+      );
+    }
+  }
+
+  unzipGroups(
+    params: LabParams,
+    hash?: ModHash,
+  ): Record<string, GroupState> | undefined {
+    if (params.g == null) return;
+
+    const state: Record<string, GroupState> = {};
+    let index = 1;
+    for (const group of params.g) {
+      const s = group.split(ZFIELDSEP);
+      const id = index.toString();
+      const obj: GroupState = {
+        id,
+        rootItemIds: coalesce(this.zip.parseArray(s[0], hash?.items), []),
+        name: this.zip.parseText(s[1]),
+      };
 
       prune(obj);
       state[id] = obj;
@@ -1113,6 +1179,7 @@ export class RouterSync {
 
     // Zip state
     str('tfi', (s) => s.filter);
+    str('tgr', (s) => s.group);
     str('tso', (s) => s.sort);
     bln('tas', (s) => s.asc);
     num('tpg', (s) => s.page);
@@ -1128,6 +1195,7 @@ export class RouterSync {
 
     const obj: Partial<TableState> = {
       filter: str('tfi'),
+      group: str('tgr'),
       sort: str('tso'),
       asc: bln('tas'),
       page: num('tpg'),

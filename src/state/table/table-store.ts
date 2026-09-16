@@ -6,6 +6,7 @@ import { initialTableState, TableState } from './table-state';
 @Service()
 export class TableStore extends Store<TableState> {
   readonly filter = this.select('filter');
+  readonly group = this.select('group');
   readonly page = this.select('page');
   readonly rows = this.select('rows');
   readonly sort = this.select('sort');

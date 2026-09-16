@@ -2,6 +2,8 @@ import { LabParams } from '../router/lab-params';
 
 export interface TableState {
   filter?: string;
+  /** Id of the selected group, or undefined for the whole factory */
+  group?: string;
   sort?: string;
   asc: boolean;
   page: number;
@@ -20,4 +22,5 @@ export const resetTableParams: Partial<LabParams> = {
   tas: undefined,
   tpg: undefined,
   tro: undefined,
+  tgr: undefined,
 };
