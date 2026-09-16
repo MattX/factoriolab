@@ -60,16 +60,26 @@ interface Consumer {
   fraction: number;
 }
 
+/** What a step contributes to the graph: an item's production, a recipe, or both */
+interface GraphNode {
+  stepId: string;
+  /** Set when this step accounts for the production of an item */
+  itemId?: string;
+  isRecipe: boolean;
+}
+
 interface Graph {
-  /** Item ids which have a step, in step order */
-  itemIds: string[];
+  /**
+   * Steps in the order the solve left them, which runs from the objectives back
+   * towards the inputs. Walking demand in this order carries it across the whole
+   * sheet in a single pass.
+   */
+  nodes: GraphNode[];
   stepIdByItemId: Record<string, string>;
   /** Recipe steps which take each item, with the fraction of production taken */
   consumers: Record<string, Consumer[]>;
   /** Fraction of each item which goes to the objectives of the sheet */
   objectiveFractions: Record<string, number>;
-  /** Recipe step ids, in step order */
-  recipeStepIds: string[];
   /** Items produced by each recipe step, sorted, keyed by step id */
   recipeOutputs: Record<string, string[]>;
   /** Recipe steps which are fixed to the main group, keyed by step id */
@@ -135,20 +145,25 @@ export function attributeGroups(
 function buildGraph(steps: Step[]): Graph {
   const pinned: Step[] = [];
   const graph: Graph = {
-    itemIds: [],
+    nodes: [],
     stepIdByItemId: {},
     consumers: {},
     objectiveFractions: {},
-    recipeStepIds: [],
     recipeOutputs: {},
     pinned: {},
     pinnedFractions: {},
   };
 
   for (const step of steps) {
+    const node: GraphNode = {
+      stepId: step.id,
+      isRecipe: step.recipeId != null,
+    };
+    graph.nodes.push(node);
+
     if (step.itemId != null && graph.stepIdByItemId[step.itemId] == null) {
       const itemId = step.itemId;
-      graph.itemIds.push(itemId);
+      node.itemId = itemId;
       graph.stepIdByItemId[itemId] = step.id;
       graph.consumers[itemId] = [];
       graph.objectiveFractions[itemId] = 0;
@@ -166,7 +181,6 @@ function buildGraph(steps: Step[]): Graph {
 
     if (step.recipeId == null) continue;
 
-    graph.recipeStepIds.push(step.id);
     graph.recipeOutputs[step.id] = toRecordEntries(coalesce(step.outputs, {}))
       .filter(([, value]) => value.nonzero())
       .map(([itemId]) => itemId)
@@ -229,9 +243,10 @@ function closeRoots(graph: Graph, assignment: Assignment): void {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let changed = false;
 
-    for (const stepId of graph.recipeStepIds) {
-      if (graph.pinned[stepId]) continue;
+    for (const node of graph.nodes) {
+      if (!node.isRecipe || graph.pinned[node.stepId]) continue;
 
+      const stepId = node.stepId;
       const outputs = graph.recipeOutputs[stepId];
       const owner = recipeOwner(graph, assignment, stepId);
       if (owner == null) continue;
@@ -262,19 +277,29 @@ function recipeOwner(
   return undefined;
 }
 
-/** Walks demand back from the roots of each group until the shares settle */
+/**
+ * Walks demand back from the roots of each group until the shares settle.
+ *
+ * Each pass takes the steps in the order the solve left them, and updates the
+ * item a step produces before the recipe which produces it. A step's consumers
+ * come earlier in that order, so their demand has already been updated this
+ * pass, and an acyclic sheet settles in one pass rather than one per level.
+ */
 function solveShares(graph: Graph, assignment: Assignment): Shares {
   const shares: Shares = { item: {}, recipe: {} };
   const owners: Record<string, string | undefined> = {};
-  for (const stepId of graph.recipeStepIds)
-    owners[stepId] = recipeOwner(graph, assignment, stepId);
+  for (const node of graph.nodes) {
+    if (!node.isRecipe) continue;
+    owners[node.stepId] = recipeOwner(graph, assignment, node.stepId);
+  }
 
   for (const groupId of assignment.ids) {
     shares.item[groupId] = {};
     shares.recipe[groupId] = {};
-    for (const itemId of graph.itemIds) shares.item[groupId][itemId] = 0;
-    for (const stepId of graph.recipeStepIds)
-      shares.recipe[groupId][stepId] = 0;
+    for (const node of graph.nodes) {
+      if (node.itemId != null) shares.item[groupId][node.itemId] = 0;
+      if (node.isRecipe) shares.recipe[groupId][node.stepId] = 0;
+    }
   }
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
@@ -285,32 +310,36 @@ function solveShares(graph: Graph, assignment: Assignment): Shares {
       const itemShares = shares.item[groupId];
       const recipeShares = shares.recipe[groupId];
 
-      for (const itemId of graph.itemIds) {
-        const owner = assignment.owners[itemId];
-        let value: number;
-        if (owner === groupId) {
-          // The group claims every unit of its root which it can reach
-          value = Math.max(0, 1 - pinnedFraction(graph, itemId));
-        } else if (owner != null) {
-          // Claimed elsewhere, anything this group takes is an import
-          value = isMain ? pinnedFraction(graph, itemId) : 0;
-        } else {
-          value = demand(graph, recipeShares, itemId, isMain);
+      for (const node of graph.nodes) {
+        const itemId = node.itemId;
+        if (itemId != null) {
+          const owner = assignment.owners[itemId];
+          let value: number;
+          if (owner === groupId) {
+            // The group claims every unit of its root which it can reach
+            value = Math.max(0, 1 - pinnedFraction(graph, itemId));
+          } else if (owner != null) {
+            // Claimed elsewhere, anything this group takes is an import
+            value = isMain ? pinnedFraction(graph, itemId) : 0;
+          } else {
+            value = demand(graph, recipeShares, itemId, isMain);
+          }
+
+          delta = Math.max(delta, Math.abs(value - itemShares[itemId]));
+          itemShares[itemId] = value;
         }
 
-        delta = Math.max(delta, Math.abs(value - itemShares[itemId]));
-        itemShares[itemId] = value;
-      }
+        if (!node.isRecipe) continue;
 
-      for (const stepId of graph.recipeStepIds) {
+        const stepId = node.stepId;
         let value: number;
         if (graph.pinned[stepId]) value = isMain ? 1 : 0;
         else if (owners[stepId] != null)
           value = owners[stepId] === groupId ? 1 : 0;
         else {
           value = 0;
-          for (const itemId of graph.recipeOutputs[stepId])
-            value = Math.max(value, itemShares[itemId]);
+          for (const outputId of graph.recipeOutputs[stepId])
+            value = Math.max(value, itemShares[outputId]);
         }
 
         delta = Math.max(delta, Math.abs(value - recipeShares[stepId]));
@@ -348,9 +377,10 @@ function deriveAutoGroup(
   assignment: Assignment,
   shares: Shares,
 ): boolean {
-  for (const stepId of graph.recipeStepIds) {
-    if (graph.pinned[stepId]) continue;
+  for (const node of graph.nodes) {
+    if (!node.isRecipe || graph.pinned[node.stepId]) continue;
 
+    const stepId = node.stepId;
     const outputs = graph.recipeOutputs[stepId];
     // A recipe with a single output is split by demand, and one whose output is
     // already claimed belongs to whoever claims it
@@ -447,7 +477,10 @@ function buildResult(
     const name = stateById[groupId]?.name;
     if (name != null) attribution.name = name;
 
-    for (const itemId of graph.itemIds) {
+    for (const node of graph.nodes) {
+      const itemId = node.itemId;
+      if (itemId == null) continue;
+
       const value = toRational(shares.item[groupId][itemId]);
       if (value.nonzero())
         attribution.itemShares[graph.stepIdByItemId[itemId]] = value;
@@ -484,9 +517,11 @@ function buildResult(
       }
     }
 
-    for (const stepId of graph.recipeStepIds) {
-      const value = toRational(shares.recipe[groupId][stepId]);
-      if (value.nonzero()) attribution.recipeShares[stepId] = value;
+    for (const node of graph.nodes) {
+      if (!node.isRecipe) continue;
+
+      const value = toRational(shares.recipe[groupId][node.stepId]);
+      if (value.nonzero()) attribution.recipeShares[node.stepId] = value;
     }
 
     result.groups.push(attribution);
